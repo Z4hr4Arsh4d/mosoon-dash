@@ -4,7 +4,8 @@ A cute pixel-art survival game: guide a paper boat through a flooded street as t
 
 **▶️ Play it live:** https://monsoon-dash.vercel.app/
 ---
-##Interface
+## Interface
+---
 <img width="535" height="910" alt="image" src="https://github.com/user-attachments/assets/0e039d3d-1ef7-4819-8207-e986b8a6ac67" />
 <img width="625" height="927" alt="image" src="https://github.com/user-attachments/assets/d5debeac-cc93-4105-81bf-b24d1c2c680b" />
 <img width="523" height="901" alt="image" src="https://github.com/user-attachments/assets/3d0ffda4-8554-4a05-b925-bed9dd54916f" />
