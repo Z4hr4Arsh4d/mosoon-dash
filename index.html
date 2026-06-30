@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<meta name="theme-color" content="#20283a" />
+<title>Monsoon Dash 🛶</title>
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet" />
+<style>
+  html, body { margin:0; padding:0; height:100%; background:#161c2b; overflow:hidden;
+    font-family:'Press Start 2P', monospace; -webkit-tap-highlight-color:transparent;
+    touch-action:none; user-select:none; }
+  #wrap { width:100%; height:100%; display:grid; place-items:center; }
+  canvas { height:100vh; width:auto; max-width:100vw; image-rendering:pixelated; image-rendering:crisp-edges;
+    display:block; box-shadow:0 0 0 4px #0d1018, 0 10px 40px rgba(0,0,0,.55); }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="game" width="320" height="540"></canvas></div>
+<script>
+(() => {
+  const cv = document.getElementById('game'), ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height;
+  ctx.imageSmoothingEnabled = false;
+
+  // ---------- storage ----------
+  const store = {
+    get(k,d){ try{const v=localStorage.getItem(k);return v==null?d:v;}catch{return d;} },
+    set(k,v){ try{localStorage.setItem(k,v);}catch{} },
+  };
+  let best = parseInt(store.get('monsoondash_best','0'))||0;
+  let muted = store.get('monsoondash_mute','0')==='1';
+
+  // ---------- audio (SFX + ambient music, procedural) ----------
+  let actx=null, musicGain=null, rainGain=null, musicTimer=null, mi=0;
+  function ensureAudio(){
+    try{
+      if(!actx){
+        actx = new (window.AudioContext||window.webkitAudioContext)();
+        musicGain = actx.createGain(); musicGain.gain.value = muted?0:0.9; musicGain.connect(actx.destination);
+        // continuous rain noise through a lowpass
+        const buf = actx.createBuffer(1, actx.sampleRate*2, actx.sampleRate);
+        const dch = buf.getChannelData(0);
+        for(let i=0;i<dch.length;i++) dch[i]=(Math.random()*2-1)*0.5;
+        const noise = actx.createBufferSource(); noise.buffer=buf; noise.loop=true;
+        const lp = actx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=1100;
+        rainGain = actx.createGain(); rainGain.gain.value=0.03;
+        noise.connect(lp); lp.connect(rainGain); rainGain.connect(musicGain); noise.start();
+        // clear looping melody scheduler
+        musicTimer = setInterval(musicStepFn, 480);
+        musicStepFn();
+      }
+      if(actx.state==='suspended') actx.resume();   // browsers start suspended until a gesture
+    }catch{}
+  }
+  function note(freq, dur, type, vol){
+    try{
+      const o=actx.createOscillator(), g=actx.createGain();
+      o.type=type||'sine'; o.frequency.value=freq; g.gain.value=0;
+      o.connect(g); g.connect(musicGain);
+      const now=actx.currentTime;
+      g.gain.linearRampToValueAtTime(vol, now+0.05);
+      g.gain.exponentialRampToValueAtTime(0.0001, now+dur);
+      o.start(now); o.stop(now+dur+0.05);
+    }catch{}
+  }
+  const SCALE=[220,261.6,293.7,329.6,392.0,440.0];          // A minor pentatonic
+  const MOTIF=[0,2,4,2, 3,2,1,0, 1,3,4,5, 4,3,2,1];          // gentle looping tune
+  function musicStepFn(){
+    if(!actx||muted) return;
+    const idx=MOTIF[mi%MOTIF.length];
+    note(SCALE[idx], 0.7, 'triangle', 0.09);                 // melody (clearly audible)
+    if(mi%8===0){ note(110,2.6,'sine',0.11); note(164.8,2.6,'sine',0.07); }  // pad chord
+    if(mi%4===2){ note(SCALE[idx]*2, 0.4, 'sine', 0.045); }  // sparkle
+    mi++;
+  }
+  function sfx(freq,dur,type,vol){
+    if(muted) return; ensureAudio();
+    try{
+      const o=actx.createOscillator(), g=actx.createGain();
+      o.type=type||'square'; o.frequency.value=freq; g.gain.value=vol||0.04;
+      o.connect(g); g.connect(actx.destination);
+      o.start(); g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime+dur);
+      o.stop(actx.currentTime+dur);
+    }catch{}
+  }
+  const sFlap=()=>sfx(420,0.09,'square',0.03);
+  const sScore=()=>sfx(720,0.11,'triangle',0.045);
+  const sCoin=()=>{ sfx(880,0.08,'square',0.04); setTimeout(()=>sfx(1170,0.1,'square',0.04),70); };
+  const sNear=()=>sfx(1320,0.06,'sine',0.03);
+  const sShield=()=>{ sfx(520,0.12,'triangle',0.05); setTimeout(()=>sfx(780,0.14,'triangle',0.05),90); };
+  const sDead=()=>{ sfx(180,0.25,'sawtooth',0.05); sfx(90,0.4,'sawtooth',0.045); };
+  function thunder(){
+    if(muted||!actx) return;
+    try{
+      const dur=0.9;
+      const buf=actx.createBuffer(1, actx.sampleRate*dur, actx.sampleRate);
+      const d=buf.getChannelData(0);
+      for(let i=0;i<d.length;i++){ const k=1-i/d.length; d[i]=(Math.random()*2-1)*k*k; }
+      const src=actx.createBufferSource(); src.buffer=buf;
+      const lp=actx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=380;
+      const g=actx.createGain(); g.gain.value=0.5;
+      src.connect(lp); lp.connect(g); g.connect(actx.destination); src.start();
+    }catch{}
+  }
+
+  // ---------- palette ----------
+  const C = {
+    water:'#46686a', water2:'#3c5a5c', ripple:'#5a7d7f',
+    paper:'#fff4dc', paperShade:'#e8d8b4', paperLine:'#c9b58a',
+    wood:'#8a5a3c', wood2:'#6e4630', bottle:'#7fb8c4',
+    rick:'#f2c14e', rickDark:'#c98a2e', rickRoof:'#3f7d54',
+    splash:'#e9f4f4', splash2:'#bfe0e0',
+    roof:'#586a7d', roof2:'#46566a', window:'#ffd86b',
+    ink:'#2b2336', cream:'#fff4dc', pink:'#ff8fc7', chai:'#caa472', umbrella:'#ff6f8f',
+  };
+  // sky gradient stops for afternoon -> dusk -> night (phase 0..1)
+  const SKY=[
+    { top:'#6b7a99', bot:'#94a3bd' }, // afternoon
+    { top:'#6a5a7a', bot:'#c08a78' }, // dusk
+    { top:'#202744', bot:'#39496a' }, // night
+  ];
+
+  // ---------- color utils ----------
+  function hexToRgb(h){ const n=parseInt(h.slice(1),16); return [(n>>16)&255,(n>>8)&255,n&255]; }
+  function lerp(a,b,f){ return a+(b-a)*f; }
+  function lerpHex(h1,h2,f){ const a=hexToRgb(h1),b=hexToRgb(h2); return `rgb(${lerp(a[0],b[0],f)|0},${lerp(a[1],b[1],f)|0},${lerp(a[2],b[2],f)|0})`; }
+  function shade(hex,amt){ const [r,g,b]=hexToRgb(hex);
+    return `rgb(${Math.max(0,Math.min(255,r+amt*255))|0},${Math.max(0,Math.min(255,g+amt*255))|0},${Math.max(0,Math.min(255,b+amt*255))|0})`; }
+  function skyAt(phase){
+    if(phase<0.5){ const f=phase*2; return { top:lerpHex(SKY[0].top,SKY[1].top,f), bot:lerpHex(SKY[0].bot,SKY[1].bot,f) }; }
+    const f=(phase-0.5)*2; return { top:lerpHex(SKY[1].top,SKY[2].top,f), bot:lerpHex(SKY[1].bot,SKY[2].bot,f) };
+  }
+
+  // ---------- state ----------
+  let state='start';
+  let boat, obstacles, coins, powerups, particles, ripples, rainDrops, glass, popups, windows;
+  let scrollX, score, rainLevel, t, shake, scaleSpeed, spawnTimer, deathT, capsize;
+  let phase, flash, nextStrike, windDir, sinceSpawnPU;
+
+  function reset(){
+    boat={ x:86, y:H*0.42, vy:0, r:13, tilt:0, sink:0, shield:false, shieldT:0 };
+    obstacles=[]; coins=[]; powerups=[]; particles=[]; ripples=[]; popups=[];
+    rainDrops=makeRain(70); glass=[];
+    scrollX=0; score=0; rainLevel=1; t=0; shake=0; scaleSpeed=2.2; spawnTimer=0;
+    deathT=0; capsize=0; phase=0; flash=0; nextStrike=240+Math.random()*200; windDir=0; sinceSpawnPU=0;
+    windows=makeWindows();
+  }
+  function makeRain(n){ const a=[]; for(let i=0;i<n;i++) a.push({x:Math.random()*W,y:Math.random()*H,len:6+Math.random()*8,sp:6+Math.random()*5}); return a; }
+  function makeWindows(){ const a=[]; for(let i=0;i<40;i++) a.push({lit:Math.random()<0.5, fl:Math.random()*100}); return a; }
+
+  // ---------- obstacles / pickups ----------
+  const TYPES=['debris','splash','rickshaw'];
+  function spawnObstacle(){
+    const type=TYPES[(Math.random()*TYPES.length)|0];
+    const gapH=Math.max(158,196-rainLevel*6);
+    const margin=70;
+    const gapY=margin+Math.random()*(H-gapH-margin*2);
+    const o={ x:W+30, w:54, gapY, gapH, type, passed:false, wob:Math.random()*Math.PI*2 };
+    obstacles.push(o);
+    // ONE pickup per gap, centered in the clear space between pillars (never overlaps an obstacle or another pickup)
+    const puX = o.x + o.w + 40;     // middle of the ~81px gap before the next obstacle
+    const puY = gapY + gapH/2;       // vertical centre of THIS gap (no pillar at puX)
+    sinceSpawnPU++;
+    if(sinceSpawnPU>4 && Math.random()<0.22){
+      sinceSpawnPU=0;
+      powerups.push({ x:puX, y:puY, got:false, bob:Math.random()*6 });
+    } else if(Math.random()<0.4){
+      coins.push({ x:puX, y:puY, got:false, bob:Math.random()*6 });
+    }
+  }
+
+  // ---------- input ----------
+  function flap(){
+    if(state==='start'){ reset(); state='play'; }
+    else if(state==='dead'){ state='start'; }
+    if(state==='play'){
+      boat.vy=-6.4; boat.tilt=-0.5; sFlap();
+      ripples.push({x:boat.x,y:boat.y+8,r:4,max:22,a:1});
+      for(let i=0;i<6;i++) particles.push({x:boat.x,y:boat.y+8,vx:(Math.random()-0.5)*2,vy:-Math.random()*2.4,life:1,c:C.splash});
+    }
+  }
+  cv.addEventListener('pointerdown',(e)=>{
+    ensureAudio();
+    const r=cv.getBoundingClientRect(), sx=W/r.width, sy=H/r.height;
+    const pxp=(e.clientX-r.left)*sx, py=(e.clientY-r.top)*sy;
+    if(pxp>=muteBox.x-6 && pxp<=muteBox.x+muteBox.w && py>=muteBox.y && py<=muteBox.y+muteBox.h+4){ toggleMute(); return; }
+    flap(); e.preventDefault();
+  },{passive:false});
+  window.addEventListener('keydown',(e)=>{
+    if(e.code==='Space'||e.code==='ArrowUp'){ ensureAudio(); flap(); e.preventDefault(); }
+    if(e.code==='KeyM') toggleMute();
+  });
+  const muteBox={ x:W-30, y:8, w:22, h:22 };
+  function toggleMute(){ muted=!muted; store.set('monsoondash_mute',muted?'1':'0'); if(musicGain) musicGain.gain.value=muted?0:0.9; }
+
+  // ---------- update ----------
+  function update(dt){
+    t+=dt;
+    for(const d of rainDrops){ d.y+=(d.sp+rainLevel*1.6)*dt; d.x-=(1+rainLevel*0.4+windDir*3)*dt; if(d.y>H){d.y=-10;d.x=Math.random()*W;} if(d.x<0)d.x+=W; if(d.x>W)d.x-=W; }
+    for(let i=ripples.length-1;i>=0;i--){ const r=ripples[i]; r.r+=0.9*dt; r.a-=0.04*dt; if(r.a<=0||r.r>r.max) ripples.splice(i,1); }
+    for(let i=particles.length-1;i>=0;i--){ const p=particles[i]; p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy+=0.25*dt; p.life-=0.03*dt; if(p.life<=0) particles.splice(i,1); }
+    for(let i=popups.length-1;i>=0;i--){ const p=popups[i]; p.y-=0.4*dt; p.life-=0.02*dt; if(p.life<=0) popups.splice(i,1); }
+    if(shake>0) shake=Math.max(0,shake-dt*1.5);
+    // glass droplets
+    if(Math.random()<0.04*rainLevel) glass.push({x:Math.random()*W,y:-4,r:2+Math.random()*3,sp:0.4+Math.random()*0.8,life:1});
+    for(let i=glass.length-1;i>=0;i--){ const d=glass[i]; d.y+=d.sp*dt; d.life-=0.004*dt; if(d.y>H||d.life<=0) glass.splice(i,1); }
+    // flash decay
+    if(flash>0) flash=Math.max(0,flash-0.05*dt);
+    // window flicker
+    for(const w of windows){ w.fl-=dt; if(w.fl<=0){ w.fl=40+Math.random()*120; if(Math.random()<0.3) w.lit=!w.lit; } }
+
+    if(state==='play'){
+      rainLevel=Math.min(5,1+Math.floor(score/7));
+      scaleSpeed=2.2+rainLevel*0.28;
+      phase=Math.min(1,score/35);
+
+      // monsoon current + wind direction (for visible streaks)
+      const gust=Math.sin(t*0.05);
+      windDir=gust*(0.10*rainLevel);
+      boat.vy+=(0.42+windDir)*dt; boat.vy=Math.min(boat.vy,9);
+      boat.y+=boat.vy*dt;
+      boat.tilt+=((Math.max(-0.5,Math.min(0.9,boat.vy*0.09)))-boat.tilt)*0.2*dt;
+      if(boat.shield){ boat.shieldT-=dt; if(boat.shieldT<=0) boat.shield=false; }
+
+      // lightning scheduler (more frequent at higher rain)
+      nextStrike-=dt*(0.6+rainLevel*0.25);
+      if(nextStrike<=0){ strike(); nextStrike=(260-rainLevel*30)+Math.random()*220; }
+
+      spawnTimer-=dt;
+      if(spawnTimer<=0){ spawnObstacle(); spawnTimer=135/scaleSpeed; }
+
+      for(const o of obstacles){
+        o.x-=scaleSpeed*dt;
+        if(!o.passed && o.x+o.w<boat.x){
+          o.passed=true; score++; sScore();
+          // near-miss check
+          const dTop=Math.abs(boat.y-o.gapY), dBot=Math.abs((o.gapY+o.gapH)-boat.y);
+          if(Math.min(dTop,dBot)<24){ score++; sNear(); popups.push({x:boat.x+20,y:boat.y-14,txt:'NICE +1',life:1,c:C.pink});
+            for(let i=0;i<6;i++) particles.push({x:boat.x+18,y:boat.y,vx:Math.random()*2,vy:(Math.random()-0.5)*2,life:1,c:C.pink}); }
+        }
+      }
+      while(obstacles.length && obstacles[0].x+obstacles[0].w<-10) obstacles.shift();
+
+      // coins
+      for(const c of coins){ c.x-=scaleSpeed*dt; c.bob+=0.1*dt;
+        if(!c.got && Math.abs(c.x-boat.x)<14 && Math.abs((c.y+Math.sin(c.bob)*3)-boat.y)<16){
+          c.got=true; score+=2; sCoin(); popups.push({x:c.x,y:c.y-10,txt:'+2',life:1,c:C.chai});
+          for(let i=0;i<8;i++) particles.push({x:c.x,y:c.y,vx:(Math.random()-0.5)*3,vy:(Math.random()-0.5)*3,life:1,c:C.chai});
+        }
+      }
+      for(let i=coins.length-1;i>=0;i--) if(coins[i].got||coins[i].x<-20) coins.splice(i,1);
+
+      // power-ups
+      for(const p of powerups){ p.x-=scaleSpeed*dt; p.bob+=0.1*dt;
+        if(!p.got && Math.abs(p.x-boat.x)<16 && Math.abs((p.y+Math.sin(p.bob)*3)-boat.y)<18){
+          p.got=true; boat.shield=true; boat.shieldT=99999; sShield(); popups.push({x:p.x,y:p.y-12,txt:'SHIELD!',life:1,c:C.umbrella});
+        }
+      }
+      for(let i=powerups.length-1;i>=0;i--) if(powerups[i].got||powerups[i].x<-20) powerups.splice(i,1);
+
+      if(boat.y-boat.r<0){ boat.y=boat.r; boat.vy=0; }
+      if(boat.y+boat.r>H-8){ die(); }
+      for(const o of obstacles){ if(hit(o)){ hurt(o); break; } }
+    } else if(state==='dying'){
+      deathT+=dt; capsize+=0.12*dt; boat.vy+=0.5*dt; boat.y+=boat.vy*dt; boat.sink+=0.6*dt;
+      if(deathT>38){ state='dead'; if(score>best){ best=score; store.set('monsoondash_best',String(best)); } }
+    }
+  }
+
+  function strike(){ flash=1; const delay=300+Math.random()*500; setTimeout(thunder, delay); if(Math.random()<0.4) setTimeout(()=>{flash=Math.max(flash,0.7);}, 120); }
+  function hit(o){ const bx=boat.x,by=boat.y,r=boat.r-2;
+    if(bx+r<o.x||bx-r>o.x+o.w) return false;
+    const inGap=(by-r>o.gapY)&&(by+r<o.gapY+o.gapH); return !inGap; }
+  function hurt(o){
+    if(boat.shield){ boat.shield=false; shake=0.7; sShield(); o.x=-999; // pass through after popping shield
+      for(let i=0;i<14;i++) particles.push({x:boat.x,y:boat.y,vx:(Math.random()-0.5)*4,vy:(Math.random()-0.5)*4,life:1,c:C.umbrella}); return; }
+    die();
+  }
+  function die(){
+    if(state!=='play') return;
+    state='dying'; deathT=0; shake=1; sDead();
+    for(let i=0;i<22;i++) particles.push({x:boat.x,y:boat.y,vx:(Math.random()-0.5)*4,vy:-Math.random()*3,life:1,c:i%2?C.splash:C.paper});
+  }
+
+  // ---------- draw ----------
+  function px(x,y,w,h,c){ ctx.fillStyle=c; ctx.fillRect(x|0,y|0,w|0,h|0); }
+
+  function drawBackground(){
+    const sk=skyAt(phase);
+    const g=ctx.createLinearGradient(0,0,0,H); g.addColorStop(0,sk.top); g.addColorStop(1,sk.bot);
+    ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+    const dk=-phase*0.28;
+    // far buildings + lit windows
+    const bx=-(scrollX*0.2%80);
+    let wi=0;
+    for(let i=-1;i<6;i++){
+      const x=bx+i*80;
+      px(x,H*0.42-40,30,80,shade(C.roof2,dk)); px(x+34,H*0.42-20,24,60,shade(C.roof2,dk));
+      for(let wy=0;wy<3;wy++){ const w=windows[wi++%windows.length];
+        if(w.lit){ ctx.globalAlpha=0.4+phase*0.6; px(x+6,H*0.42-30+wy*18,6,7,C.window); px(x+18,H*0.42-30+wy*18,6,7,C.window); ctx.globalAlpha=1; } }
+    }
+    // rooftops
+    const rx=-(scrollX*0.4%64);
+    for(let i=-1;i<7;i++){ const x=rx+i*64; px(x,H*0.5,50,H,shade(C.roof,dk)); px(x+6,H*0.5-8,12,8,shade(C.roof,dk)); }
+    // flood water
+    const wy=H*0.52; px(0,wy,W,H-wy,shade(C.water,dk));
+    ctx.globalAlpha=0.5;
+    for(let i=0;i<10;i++){ const y=wy+14+i*18; const off=(scrollX*1.2+i*30)%40; for(let x=-40+off;x<W;x+=40) px(x,y,16,2,shade(C.ripple,dk)); }
+    ctx.globalAlpha=1;
+  }
+
+  function drawWind(){
+    const s=Math.abs(windDir)/(0.10*5);
+    if(s<0.35) return;
+    ctx.globalAlpha=(s-0.35)*0.5; ctx.strokeStyle='rgba(220,235,245,0.6)'; ctx.lineWidth=1;
+    const dir=windDir<0?-1:1; ctx.beginPath();
+    for(let i=0;i<8;i++){ const y=40+i*60+((t*2)%60); const x=(i*53+(t*3*dir))%(W+40)-20; ctx.moveTo(x,y); ctx.lineTo(x+18*dir,y-5); }
+    ctx.stroke(); ctx.globalAlpha=1;
+  }
+
+  function drawObstacle(o){
+    const dk=-phase*0.18;
+    if(o.type==='debris'){ debrisCol(o.x,0,o.gapY,false,dk); debrisCol(o.x,o.gapY+o.gapH,H-(o.gapY+o.gapH),true,dk); }
+    else if(o.type==='splash'){ splashCol(o.x,0,o.gapY,false,o.wob,dk); splashCol(o.x,o.gapY+o.gapH,H-(o.gapY+o.gapH),true,o.wob,dk); }
+    else { px(o.x+18,0,6,o.gapY-14,shade(C.wood2,dk)); px(o.x+6,o.gapY-16,42,14,shade(C.rickDark,dk)); rickshaw(o.x,o.gapY+o.gapH,H-(o.gapY+o.gapH),dk); }
+  }
+  function debrisCol(x,y,h,fb,dk){ px(x,y,54,h,shade(C.water2,dk));
+    for(let yy=y+4;yy<y+h-6;yy+=16){ px(x+4,yy,46,10,shade(C.wood,dk)); px(x+6,yy+2,42,3,shade(C.wood2,dk)); px(x+30,yy-4,8,12,shade(C.bottle,dk)); }
+    px(x-3,fb?y:y+h-10,60,10,shade(C.wood2,dk)); }
+  function splashCol(x,y,h,fb,wob,dk){ px(x+4,y,46,h,shade(C.splash2,dk)); px(x+10,y,34,h,shade(C.splash,dk));
+    const ey=fb?y:y+h-8; for(let i=0;i<6;i++) px(x+2+i*9,ey+(Math.sin(wob+i)*3|0),8,8,shade(C.splash2,dk)); }
+  function rickshaw(x,y,h,dk){ px(x+6,y+10,44,h-10,shade(C.rick,dk)); px(x+6,y+2,44,12,shade(C.rickRoof,dk));
+    px(x+10,y+18,16,14,shade(C.rickDark,dk)); px(x+30,y+18,14,14,shade(C.rickDark,dk));
+    px(x+8,y+h-12,12,12,C.ink); px(x+34,y+h-12,12,12,C.ink); }
+
+  function drawCoin(c){ const y=c.y+Math.sin(c.bob)*3;
+    px(c.x-6,y-4,12,9,C.chai); px(c.x-4,y-2,8,4,'#6e4630'); px(c.x+6,y-2,3,5,C.chai); // cup+handle
+    ctx.globalAlpha=0.5; px(c.x-2,y-10,2,5,'#e9f4f4'); px(c.x+1,y-12,2,5,'#e9f4f4'); ctx.globalAlpha=1; } // steam
+  function drawPU(p){ const y=p.y+Math.sin(p.bob)*3;
+    px(p.x-10,y-2,20,4,C.umbrella); px(p.x-7,y-6,14,4,C.umbrella); px(p.x-3,y-9,6,4,C.umbrella); px(p.x-1,y-2,2,12,'#6e4630'); }
+
+  function drawBoat(){
+    ctx.save(); ctx.translate(boat.x,boat.y+boat.sink); ctx.rotate(boat.tilt+capsize);
+    const dk=-phase*0.12, pap=shade(C.paper,dk), sh=shade(C.paperShade,dk);
+    px(-18,4,36,4,sh); px(-15,0,30,4,pap); px(-12,-4,24,4,pap);
+    px(-9,-18,4,14,pap); px(-5,-14,4,10,pap); px(-1,-10,4,6,pap);
+    px(1,-18,9,4,pap); px(1,-14,7,4,sh); px(1,-10,5,4,pap);
+    px(-1,-18,2,22,C.paperLine);
+    ctx.restore();
+    if(boat.shield){ ctx.globalAlpha=0.5+Math.sin(t*0.3)*0.2; ctx.strokeStyle=C.umbrella; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(boat.x,boat.y,boat.r+8,0,Math.PI*2); ctx.stroke(); ctx.globalAlpha=1; }
+  }
+
+  function drawRain(){ ctx.strokeStyle='rgba(230,238,245,0.5)'; ctx.lineWidth=1; ctx.beginPath();
+    const dx=windDir*3; for(const d of rainDrops){ ctx.moveTo(d.x,d.y); ctx.lineTo(d.x-2-dx,d.y+d.len); } ctx.stroke(); }
+
+  function drawGlass(){ for(const d of glass){ ctx.globalAlpha=0.18*d.life; ctx.fillStyle='#dff0ff';
+    ctx.beginPath(); ctx.arc(d.x,d.y,d.r,0,Math.PI*2); ctx.fill(); ctx.fillRect(d.x-0.5,d.y-d.r*2,1,d.r*2); } ctx.globalAlpha=1; }
+
+  function drawFX(){
+    for(const p of particles){ ctx.globalAlpha=Math.max(0,p.life); px(p.x,p.y,3,3,p.c); } ctx.globalAlpha=1;
+    for(const r of ripples){ ctx.globalAlpha=Math.max(0,r.a); ctx.strokeStyle=C.ripple; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.ellipse(r.x,r.y,r.r,r.r*0.4,0,0,Math.PI*2); ctx.stroke(); } ctx.globalAlpha=1;
+    for(const p of popups){ text(p.txt,p.x,p.y,7,p.c); }
+  }
+
+  function drawVignette(){ const a=phase*0.34; if(a<=0) return;
+    const g=ctx.createRadialGradient(W/2,H*0.45,H*0.22,W/2,H*0.5,H*0.78);
+    g.addColorStop(0,'rgba(16,20,32,0)'); g.addColorStop(1,`rgba(16,20,32,${a})`);
+    ctx.fillStyle=g; ctx.fillRect(0,0,W,H); }
+  function drawFlash(){ if(flash<=0) return; ctx.fillStyle=`rgba(235,240,255,${flash*0.6})`; ctx.fillRect(0,0,W,H);
+    // water reflection sparkle
+    ctx.fillStyle=`rgba(255,255,255,${flash*0.25})`; ctx.fillRect(0,H*0.52,W,4); }
+
+  function text(str,x,y,size,c,align){ ctx.font=`${size}px "Press Start 2P", monospace`; ctx.textAlign=align||'center'; ctx.textBaseline='top';
+    ctx.fillStyle=C.ink; ctx.fillText(str,x+2,y+2); ctx.fillStyle=c; ctx.fillText(str,x,y); }
+
+  function drawHUD(){
+    if(state==='play'||state==='dying'){
+      text(String(score),W/2,22,22,C.cream);
+      for(let i=0;i<5;i++) px(10+i*9,14,6,6,i<rainLevel?C.pink:'rgba(255,255,255,.3)');
+      text('RAIN',10,24,6,C.cream,'left');
+    }
+    // sound toggle — pixel speaker icon
+    px(muteBox.x,muteBox.y,muteBox.w,muteBox.h,'rgba(16,20,32,.6)');
+    const mx=muteBox.x+5, my=muteBox.y+7;
+    px(mx,my+2,3,6,C.cream); px(mx+3,my,5,10,C.cream);        // speaker body + cone
+    if(muted){ ctx.strokeStyle=C.pink; ctx.lineWidth=2; ctx.beginPath();
+      ctx.moveTo(muteBox.x+3,muteBox.y+3); ctx.lineTo(muteBox.x+19,muteBox.y+19); ctx.stroke(); }
+    else { px(mx+10,my+1,2,8,C.cream); px(mx+13,my-1,2,12,C.cream); }   // sound waves
+  }
+  function panel(){ ctx.fillStyle='rgba(16,20,32,0.55)'; ctx.fillRect(0,0,W,H); }
+  function drawStart(){
+    panel();
+    text('MONSOON',W/2,H*0.26,20,C.pink); text('DASH',W/2,H*0.26+30,20,C.cream);
+    ctx.save(); ctx.translate(W/2,H*0.45); ctx.rotate(Math.sin(t*0.05)*0.1);
+    px(-18,4,36,4,C.paperShade); px(-15,0,30,4,C.paper); px(-12,-4,24,4,C.paper);
+    px(-9,-18,4,14,C.paper); px(-5,-14,4,10,C.paper); px(-1,-10,4,6,C.paper);
+    px(1,-18,9,4,C.paper); px(1,-14,7,4,C.paperShade); px(1,-10,5,4,C.paper); ctx.restore();
+    text('dodge debris, splashes',W/2,H*0.57,7,C.cream);
+    text('& rickshaws. grab chai',W/2,H*0.57+12,7,C.cream);
+    text('for +2, umbrella = shield',W/2,H*0.57+24,7,C.cream);
+    if(Math.floor(t/20)%2===0) text('TAP TO START',W/2,H*0.71,10,C.pink);
+    text('BEST '+best,W/2,H*0.79,8,C.cream);
+  }
+  function drawDead(){
+    panel();
+    text('YOU SANK!',W/2,H*0.3,18,C.pink);
+    text('SCORE',W/2,H*0.44,9,C.cream); text(String(score),W/2,H*0.44+16,22,C.cream);
+    text('BEST '+best,W/2,H*0.58,9,C.cream);
+    if(score>=best&&score>0) text('NEW BEST!',W/2,H*0.64,8,C.pink);
+    if(Math.floor(t/20)%2===0) text('TAP TO RETRY',W/2,H*0.76,10,C.cream);
+  }
+
+  // ---------- loop ----------
+  let last=performance.now();
+  function frame(now){
+    let dt=(now-last)/16.6667; last=now; if(dt>3) dt=3;
+    if(state==='play') scrollX+=scaleSpeed*dt;
+    update(dt);
+    ctx.save();
+    if(shake>0) ctx.translate((Math.random()-0.5)*6*shake,(Math.random()-0.5)*6*shake);
+    drawBackground();
+    drawWind();
+    const playing = state==='play'||state==='dying'||state==='dead';
+    if(playing){ for(const o of obstacles) drawObstacle(o); for(const c of coins) drawCoin(c); for(const p of powerups) drawPU(p); }
+    drawFX();
+    if(state==='play'||state==='dying') drawBoat();
+    drawRain();
+    drawVignette();
+    drawFlash();
+    drawGlass();
+    ctx.restore();
+    drawHUD();
+    if(state==='start') drawStart();
+    if(state==='dead') drawDead();
+    requestAnimationFrame(frame);
+  }
+  reset(); state='start';
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
